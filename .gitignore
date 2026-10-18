@@ -17,3 +17,7 @@ tray_config.json
 .idea/
 Thumbs.db
 desktop.ini
+
+# 本地标定与图标预览产物
+protocols_user.json
+_icon_preview/

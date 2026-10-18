@@ -1,4 +1,58 @@
-# 设备电量查看器
+# ROG 无线设备电量查看器
+
+Windows 上的 ROG 鼠标与耳机电量面板 / 托盘工具，纯 Python 标准库实现。
+
+## 来源与致谢
+
+本项目基于 **[yszyszysz233](https://github.com/yszyszysz233)** 的
+**[2.4G-battery-viewer](https://github.com/yszyszysz233/2.4G-battery-viewer)** 修改。
+原始 Windows HID 底层、设备电量框架、面板、托盘、快捷方式和调试工具由原作者提供。
+本 Fork 保留上游提交历史与原始说明，新增 ROG 设备适配、圆环电量 UI 及相关测试。
+上游代码的版权归原作者所有。
+
+ROG 协议资料另参考 [G-Helper](https://github.com/seerge/g-helper) 和
+[pelta-control](https://github.com/OthrineTM/pelta-control)，感谢这些项目公开协议细节。
+
+## ROG 适配与使用
+
+简洁面板与托盘适配 **ROG 龙鳞 ACE Aim Lab 联名版鼠标 + ROG PELTA 耳机**。
+运行 `python my_devices.py` 打开面板，`python my_devices.py --once` 只读取一次；
+`pythonw tray_app.py` 启动托盘。环境仍为 Windows 10/11、Python 3.10+（含 tkinter），无第三方依赖。
+
+面板与托盘使用电量圆环：从顶部顺时针填充，中央显示百分比。
+60–100% 绿色、30–59% 黄色、低于 30% 红色；未连接显示灰环与 `--`。
+托盘悬停可查看设备名称、准确电量和更新时间。
+
+- 鼠标：当前 OMNI 接收器 `0B05:1ACE`，接口 `MI_02&COL03`，Report ID `0x03`。
+  查询 `03 12 07`，电量在回复 `[5]`，充电标志在 `[10]`。
+  另支持原装接收器 `1A94` / USB 有线 `1A92` 的已知协议，尚未在本机验证。
+- 耳机：2.4G 接收器 `0B05:1B84` / USB 有线 `0B05:1B82`，usage page `0xFF00`。
+  查询 `CC 12 07`，电量在回复 `[6]`；`CC 12 08` 回复 `[5]` 为充电标志。
+  优先读取已连接的 2.4G，失败后尝试有线；断开、休眠和无效回复显示为未知。
+- 本机已验证：OMNI 鼠标 37%、USB PELTA 100%。PELTA 无线尚需连接耳机后实测。
+- OMNI 按用户已确认的龙鳞 ACE 配置使用；换接其他鼠标后需重新确认型号。
+  鼠标未充电且返回 0% 时按休眠/待确认处理，不作为可靠电量展示。
+- 只发送电量、连接和充电状态查询。开机自启仍由界面手动启用，不因运行程序自动开启。
+
+协议资料：[G-Helper](https://github.com/seerge/g-helper/tree/main/app/Peripherals/Mouse)、
+[pelta-control](https://github.com/OthrineTM/pelta-control/blob/main/pelta/device.py)。
+运行测试：`python -m unittest -v test_rog test_ui`（14 项，包含协议与圆环显示）。
+调试版 `app.py` 也接入了 ROG 读取；上游 ATK / DARKRIM 协议保留在底层。
+
+## 界面预览
+
+![ROG 电量圆环面板](preview-panel.png)
+
+![托盘圆环在不同电量下的显示](preview-tray.png)
+
+## 上游原始说明
+
+以下保留原作者的项目说明与适配提示词，针对其 ATK / DARKRIM 设备；
+本 Fork 的 ROG 用法以上文为准。
+
+<details>
+<summary>展开原始 README</summary>
+
 
 Windows 上读取 2.4G 无线外设电量的小工具。**纯 ctypes 调系统 DLL，零第三方依赖**——
 不用 hidapi、不用 pystray、不用 Pillow、不用 pywin32，装了 Python 就能跑。
@@ -198,3 +252,5 @@ prompt 里已经写好了硬性约束、协议模板、7 条会踩的坑和验�
 ## 说明
 
 私有协议部分是通过逆向厂商软件 + 抓包分析得到的，仅供学习与个人使用。
+
+</details>

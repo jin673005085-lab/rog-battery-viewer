@@ -3,7 +3,7 @@
 
 界面约定
 --------
-* 通知区域两个图标：ATK 鼠标（纯数字）、DARKRIM 耳机（数字带深色底板）。
+* 通知区域两个圆环图标：环长表示电量，中央数字表示百分比；悬停显示设备名。
   图标颜色随电量变化：绿 ≥60 / 黄 30-59 / 红 <30。
 * **右键图标 → 直接打开简洁界面**（界面里改设置：刷新间隔 / 开机自启 / 退出托盘）。
 * 左键图标 → 立刻刷新一次。
@@ -38,7 +38,6 @@ from typing import Optional
 
 import hid_win as hw
 import battery as bt
-import darkrim_proto as drp
 import win_icon
 import tray_common as tc
 
@@ -156,39 +155,22 @@ KERNEL32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
 
 TRAY_ICONS = [
     # (uID, key, 提示名, 是否带底板)
-    (1, "mouse", "ATK 鼠标", False),
-    (2, "headset", "DARKRIM 耳机", True),
+    (1, "mouse", "ROG 龙鳞 ACE 鼠标", False),
+    (2, "headset", "ROG PELTA 耳机", True),
 ]
 
 
 # --------------------------------------------------------------------------
 # 设备读取（轻量版）
 # --------------------------------------------------------------------------
-def _find_iface(vid: int, usage_page: int, output_len: int = 0):
-    for d in hw.enumerate_hid():
-        if d.vid == vid and d.usage_page == usage_page:
-            if not output_len or d.output_len == output_len:
-                return d
-    return None
-
-
 def read_mouse() -> tuple[Optional[int], str]:
-    iface = _find_iface(0x373B, 0xFF05, 64) or _find_iface(0x373B, 0xFF02)
-    if iface is None:
-        return None, "没找到接收器"
-    try:
-        res = bt.strategy_vendor_protocol(iface)
-    except Exception as e:
-        return None, f"读取失败：{e}"
-    if res is None:
-        return None, "没有可用的读取方式"
-    if res.ok:
-        return res.level, ""
-    return None, res.detail or "无回复（动一下鼠标）"
+    result = bt.read_rog_mouse()
+    return (result.level, "") if result.ok else (None, result.detail)
 
 
 def read_headset() -> tuple[Optional[int], str]:
-    return drp.read_battery_only(timeout=0.4)
+    result = bt.read_rog_headset()
+    return (result.level, "") if result.ok else (None, result.detail)
 
 
 # --------------------------------------------------------------------------

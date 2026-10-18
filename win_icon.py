@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """win_icon.py —— 用纯 Python 画托盘图标（不依赖 Pillow / 任何第三方库）
 
-做法：内置一套 3x5 点阵数字，按电量数值渲染成 RGBA 位图，
+做法：圆环长度表示剩余电量，中央用点阵数字显示百分比，
 再手写 ICO 文件格式，最后交给 LoadImageW 变成 HICON。
 支持 16/24/32 三种尺寸，Windows 会按 DPI 自动挑合适的那张。
 """
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import struct
 import tempfile
@@ -30,82 +31,68 @@ DIGITS = {
     "%": ("101", "001", "010", "100", "101"),
 }
 
-GLYPH_W, GLYPH_H = 3, 5
-
 
 def render_rgba(text: str, size: int, color: tuple[int, int, int],
                 plate: bool = False, plate_color=(28, 30, 34, 235)) -> bytes:
     """把文字渲染成 size×size 的 RGBA 像素（返回 size*size*4 字节，行优先）。"""
-    n = len(text)
-    # 选一个能放下的最大缩放倍数
-    gap = 1
-    scale = 1
-    while True:
-        w = n * GLYPH_W * (scale + 1) + (n - 1) * gap
-        h = GLYPH_H * (scale + 1)
-        if w > size - 2 or h > size - 2:
-            break
-        scale += 1
+    level = int(text) if text.isdecimal() else None
+    if level is not None and not 0 <= level <= 100:
+        raise ValueError("电量必须在 0–100 之间")
+    # 在 16×16 逻辑画布上绘制，4 倍采样让小圆环边缘平滑。
+    samples = 4
+    high = size * samples
+    unit = high / 16
+    center, radius, half_width = 8, 6.65, 0.95
+    sweep = 0 if level is None else math.tau * level / 100
+    end_x, end_y = radius * math.sin(sweep), -radius * math.cos(sweep)
+    background = plate_color[:3] if plate else (18, 22, 28)
+    track = (77, 85, 97)
+    glyphs = [("1",) * 5 if ch == "1" else
+              ("000", "000", "111", "000", "000") if ch == "-" else DIGITS[ch]
+              for ch in text]
+    width = sum(len(glyph[0]) for glyph in glyphs) + len(glyphs) - 1
+    origin, top = (16 - width) // 2, 5
+    left = 0
+    ink = set()
+    for glyph in glyphs:
+        for y, row in enumerate(glyph):
+            for x, bit in enumerate(row):
+                if bit == "1":
+                    ink.add((left + x, y))
+        left += len(glyph[0]) + 1
 
-    gw, gh = GLYPH_W * scale, GLYPH_H * scale
-    total_w = n * gw + (n - 1) * gap
-    total_h = gh
-    ox = (size - total_w) // 2
-    oy = (size - total_h) // 2
-
-    px = bytearray(size * size * 4)
-
-    def put(x: int, y: int, rgba):
-        if 0 <= x < size and 0 <= y < size:
-            i = (y * size + x) * 4
-            px[i:i + 4] = bytes(rgba)
-
-    def get(x: int, y: int):
-        i = (y * size + x) * 4
-        return (px[i], px[i + 1], px[i + 2], px[i + 3])
-
-    # 底衬（耳机图标用，跟鼠标图标区分开）
-    if plate:
-        r = max(1, size // 8)
-        for y in range(size):
-            for x in range(size):
-                # 圆角矩形
-                cx = min(x, size - 1 - x)
-                cy = min(y, size - 1 - y)
-                if cx + cy < r and cx < r and cy < r:
-                    continue
-                put(x, y, plate_color)
-
-    # 逐字画
-    for k, ch in enumerate(text):
-        glyph = DIGITS.get(ch)
-        if not glyph:
-            continue
-        gx = ox + k * (gw + gap)
-        for gy, row in enumerate(glyph):
-            for gxx, bit in enumerate(row):
-                if bit != "1":
-                    continue
-                for dy in range(scale):
-                    for dx in range(scale):
-                        put(gx + gxx * scale + dx, oy + gy * scale + dy,
-                            (*color, 255))
-
-    # 描一圈深色轮廓，保证在浅色/深色任务栏上都看得清
-    outline = (16, 17, 19, 190)
-    edge = []
+    pixels = bytearray(size * size * 4)
     for y in range(size):
         for x in range(size):
-            if get(x, y)[3] == 0:
-                continue
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < size and 0 <= ny < size and get(nx, ny)[3] == 0:
-                    edge.append((nx, ny))
-    for x, y in edge:
-        if get(x, y)[3] == 0:
-            put(x, y, outline)
-    return bytes(px)
+            total = [0, 0, 0, 0]
+            for sy in range(samples):
+                for sx in range(samples):
+                    px = (x * samples + sx + 0.5) / unit
+                    py = (y * samples + sy + 0.5) / unit
+                    dx, dy = px - center, py - center
+                    distance = math.hypot(dx, dy)
+                    if distance > 7.8:
+                        continue
+                    rgb = background
+                    if abs(distance - radius) <= half_width:
+                        angle = math.atan2(dx, -dy) % math.tau
+                        active = level is not None and level > 0 and (
+                            angle <= sweep or math.hypot(dx, dy + radius) <= half_width
+                            or math.hypot(dx - end_x, dy - end_y) <= half_width)
+                        rgb = color if active else track
+                    if (math.floor(px - origin), math.floor(py - top)) in ink:
+                        rgb = (239, 243, 249) if level is not None else (155, 164, 177)
+                    for channel in range(3):
+                        total[channel] += rgb[channel]
+                    total[3] += 255
+            count = samples * samples
+            i = (y * size + x) * 4
+            # RGB 除以覆盖样本数，透明边缘不预乘，避免浅色任务栏上出现黑边。
+            covered = total[3] // 255
+            if covered:
+                pixels[i:i + 4] = bytes([round(total[c] / covered) for c in range(3)]
+                                       + [round(total[3] / count)])
+    return bytes(pixels)
 
 
 def build_ico(pngs: list[tuple[int, bytes]]) -> bytes:
@@ -171,7 +158,7 @@ def make_hicon(text: str, color: tuple[int, int, int], plate: bool = False) -> i
         return _icon_cache[key]
     images = [(s, render_rgba(text, s, color, plate)) for s in SIZES]
     ico = build_ico(images)
-    path = os.path.join(_ensure_tmp(), f"ico_{text}_{color[0]:02x}{color[1]:02x}"
+    path = os.path.join(_ensure_tmp(), f"ring_{text}_{color[0]:02x}{color[1]:02x}"
                                        f"{color[2]:02x}_{int(plate)}.ico")
     try:
         with open(path, "wb") as f:
@@ -213,7 +200,7 @@ if __name__ == "__main__":
         ("82", (93, 220, 138), False, "mouse82"),
         ("70", (93, 220, 138), True, "headset70"),
         ("9", (255, 107, 107), False, "mouse9"),
-        ("100", (245, 196, 81), True, "headset100"),
+        ("100", (93, 220, 138), True, "headset100"),
         ("25", (245, 196, 81), False, "mouse25"),
     ):
         imgs = [(s, render_rgba(text, s, color, plate)) for s in SIZES]

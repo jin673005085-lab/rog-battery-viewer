@@ -280,6 +280,107 @@ def strategy_darkrim(iface: HidInterface) -> Optional[BatteryResult]:
 
 
 # --------------------------------------------------------------------------
+# ROG 龙鳞 ACE Aim Lab / PELTA：只发送查询命令，不修改设备设置。
+# 协议参考：seerge/g-helper 的 AsusMouse / HarpeAceAimLab，
+# OthrineTM/pelta-control 的 pelta/device.py；本机验证 OMNI 鼠标与 USB PELTA。
+# --------------------------------------------------------------------------
+def _rog_report_id(iface: HidInterface) -> Optional[int]:
+    if iface.vid != 0x0B05:
+        return None
+    if (iface.pid == 0x1ACE and iface.usage_page == 0xFF01
+            and "mi_02&col03" in iface.path.lower() and iface.output_len == 64):
+        return 0x03
+    if iface.usage_page != 0xFF00:
+        return None
+    if iface.pid in (0x1A94, 0x1A92) and iface.output_len == 65:
+        return 0x00
+    if iface.pid in (0x1B84, 0x1B82) and iface.output_len == 64:
+        return 0xCC
+    return None
+
+
+def _rog_query(dev: HidDevice, report_id: int, cmd: int, length: int,
+               sub: bytes = b"") -> bytes:
+    request = bytes([report_id, 0x12, cmd]) + sub
+    dev.drain()
+    dev.write_output(request.ljust(length, b"\x00"), use_hidd=False)
+    end = time.monotonic() + 0.7
+    while time.monotonic() < end:
+        report = dev.read_input(timeout_ms=150)
+        if not report or not report.startswith(request):
+            continue
+        if len(report) < 11:
+            raise HidError("ROG 回复长度不足")
+        if report[5:7] == b"\xff\xaa":
+            raise HidError("设备未连接或正在休眠")
+        return report
+    raise HidError("设备没有回复（请唤醒设备；若持续失败，请关闭奥创后重试）")
+
+
+def strategy_rog(iface: HidInterface) -> Optional[BatteryResult]:
+    report_id = _rog_report_id(iface)
+    if report_id is None:
+        return None
+    mouse = iface.pid in (0x1ACE, 0x1A94, 0x1A92)
+    connection = ("USB 有线" if iface.pid in (0x1A92, 0x1B82)
+                  else "2.4G（OMNI）" if iface.pid == 0x1ACE else "2.4G")
+    extra = {"connection": connection, "vid_pid": iface.vid_pid}
+    source = "ASUS HID 电量查询"
+    try:
+        with HidDevice(iface.path, write=True) as dev:
+            if iface.pid == 0x1B84:
+                connected = _rog_query(dev, report_id, 0, iface.output_len, b"\x00\x01")
+                if connected[5] != 1:
+                    raise HidError("PELTA 的 2.4G 未连接（请开机并切到 2.4G 模式）")
+            report = _rog_query(dev, report_id, 7, iface.output_len)
+            level = report[5 if mouse else 6]
+            if level > 100:
+                raise HidError("设备没有提供有效电量（可能未连接或正在休眠）")
+            if mouse:
+                charging = report[10] != 0
+                # shortcut: 该鼠标休眠时也返回 0%，待真机耗尽电量验证后再区分。
+                if level == 0 and not charging:
+                    raise HidError("鼠标返回 0%，可能正在休眠，请动一下鼠标后刷新")
+            else:
+                charging = _rog_query(dev, report_id, 8, iface.output_len)[5] == 1
+        return BatteryResult(
+            ok=True, level=level, raw_level=level,
+            status="charging" if charging else "full" if level == 100 else "discharging",
+            source=source, detail=connection, raw=report, extra=extra,
+        )
+    except OSError as e:
+        return BatteryResult(ok=False, source=source, detail=str(e), extra=extra)
+
+
+def _read_rog_device(pids: tuple[int, ...]) -> BatteryResult:
+    last = BatteryResult(ok=False, source="ASUS HID 电量查询",
+                         detail="没找到设备，请连接 USB 线或插入 2.4G 接收器")
+    try:
+        interfaces = hw.enumerate_hid()
+        for pid in pids:
+            for iface in interfaces:
+                if iface.pid != pid:
+                    continue
+                result = strategy_rog(iface)
+                if result is not None:
+                    if result.ok:
+                        return result
+                    last = result
+    except OSError as e:
+        last.detail = f"无法枚举设备：{e}"
+    return last
+
+
+def read_rog_mouse() -> BatteryResult:
+    # shortcut: OMNI 接收器按本机已确认的龙鳞 ACE 使用，更换鼠标时需重新确认型号。
+    return _read_rog_device((0x1ACE, 0x1A94, 0x1A92))
+
+
+def read_rog_headset() -> BatteryResult:
+    return _read_rog_device((0x1B84, 0x1B82))
+
+
+# --------------------------------------------------------------------------
 # 策略 B / D：厂商协议（含用户自定义）
 # --------------------------------------------------------------------------
 def _matches(report: bytes, expect: tuple) -> bool:
@@ -672,6 +773,7 @@ def read_battery(iface: HidInterface, listen_seconds: float = 3.0,
     """按顺序跑所有策略，返回所有尝试记录（第一条 ok=True 的是结论）。"""
     attempts: list[BatteryResult] = []
     steps = [
+        ("ROG 电量协议", lambda: strategy_rog(iface)),
         ("标准 HID 电量字段", lambda: strategy_standard_battery_usage(iface)),
         ("DARKRIM 私有协议", lambda: strategy_darkrim(iface)),
         ("厂商协议", lambda: strategy_vendor_protocol(iface)),

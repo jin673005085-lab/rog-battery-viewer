@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""我的设备电量 —— 只显示 ATK 鼠标 + DARKRIM 耳机的简洁面板
+"""我的设备电量 —— 只显示 ROG 龙鳞 ACE 鼠标 + PELTA 耳机的简洁面板
 
 用法：
     python my_devices.py            打开界面（默认自动刷新）
     python my_devices.py --once     命令行读一次就退出
 
 界面只有两块卡片，各显示一个设备的电量，可自动刷新。
-底层复用 battery.py / darkrim_proto.py 里已经验证过的协议。
+底层复用 battery.py 的 ROG 电量读取，面板与托盘使用同一份协议。
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import queue
 import threading
 import time
@@ -19,12 +20,9 @@ import traceback
 from dataclasses import dataclass
 from typing import Optional
 
-import hid_win as hw
 import battery as bt
-import darkrim_proto as drp
 import tray_common as tc
 import win_link
-from hid_win import HidInterface
 
 
 # ==========================================================================
@@ -45,71 +43,22 @@ class Reading:
         return self.level is not None
 
 
-def _find(vid: int, usage_page: int, output_len: int = 0) -> Optional[HidInterface]:
-    for d in hw.enumerate_hid():
-        if d.vid == vid and d.usage_page == usage_page:
-            if not output_len or d.output_len == output_len:
-                return d
-    return None
-
-
-def read_atk() -> Reading:
-    """ATK / VXE 无线鼠标（内置协议 2）。"""
-    r = Reading("ATK 鼠标", "无接收器")
-    iface = _find(0x373B, 0xFF05, 64) or _find(0x373B, 0xFF02)
-    if iface is None:
-        r.error = "没找到接收器（请把 2.4G 接收器插上）"
-        return r
-    r.subtitle = f"{iface.vid_pid} · {iface.product or '2.4G 接收器'}"
-    try:
-        res = bt.strategy_vendor_protocol(iface) or bt.strategy_standard_battery_usage(iface)
-    except Exception as e:
-        r.error = f"读取出错：{e}"
-        return r
-    if res is None:
-        r.error = "这台设备没有可用的读取方式"
-        return r
-    if res.ok:
-        r.level = res.level
-        r.status = res.status_text
-        r.detail = res.source
-    else:
-        r.error = res.detail or "读取失败"
-    return r
-
-
-def read_darkrim() -> Reading:
-    """DARKRIM SHADOW 耳机（杰理方案 dongle，逆向协议）。"""
-    r = Reading("DARKRIM 耳机", "未连接")
-    try:
-        info = drp.read_info(timeout=0.35)
-    except Exception as e:
-        r.error = f"读取出错：{e}"
-        return r
-    if not info.online:
-        r.error = info.detail or "没找到 dongle"
-        return r
-    r.subtitle = f"3654:6901 · {info.name or 'DARKRIM'}"
-    r.level = info.battery
-    r.status = ""
-    r.detail = "私有 TLV 协议（TLV 0x01 = 电量）"
-    bits = []
-    if info.dongle_firmware:
-        bits.append(f"dongle 固件 {info.dongle_firmware}")
-    if info.headset_firmware:
-        bits.append(f"耳机固件 {info.headset_firmware}")
-    if info.address:
-        bits.append(f"地址 {info.address}")
-    if info.status_code is not None:
-        bits.append(f"状态码 {info.status_code}")
-    r.extra = " · ".join(bits)
-    if r.level is None and not r.error:
-        r.error = "耳机没有上报电量（请确认耳机已开机并连上）"
-    return r
-
-
 def read_all() -> list[Reading]:
-    return [read_atk(), read_darkrim()]
+    readings = []
+    for title, read in (("ROG 龙鳞 ACE 鼠标", bt.read_rog_mouse),
+                        ("ROG PELTA 耳机", bt.read_rog_headset)):
+        try:
+            result = read()
+            subtitle = " · ".join(result.extra[k] for k in ("connection", "vid_pid")
+                                  if k in result.extra)
+            readings.append(Reading(
+                title, subtitle or "未连接", level=result.level if result.ok else None,
+                status=result.status_text, detail=result.source,
+                error="" if result.ok else result.detail,
+            ))
+        except Exception as e:
+            readings.append(Reading(title, "未连接", error=f"读取出错：{e}"))
+    return readings
 
 
 # ==========================================================================
@@ -160,40 +109,56 @@ class DeviceCard:
 
         self.frame = ttk.Frame(parent, style="Card.TFrame", padding=16)
         self.lab_title = ttk.Label(self.frame, text=title, style="CardTitle.TLabel")
-        self.lab_title.pack(anchor="w")
+        self.lab_title.pack(anchor="center")
         self.lab_sub = ttk.Label(self.frame, text="正在读取…", style="CardSub.TLabel")
-        self.lab_sub.pack(anchor="w", pady=(2, 0))
+        self.lab_sub.pack(anchor="center", pady=(4, 0))
 
-        self.lab_level = ttk.Label(self.frame, text="--", style="CardBig.TLabel")
-        self.lab_level.pack(anchor="w", pady=(10, 0))
+        self.ring = tk.Canvas(self.frame, width=180, height=180, bg=PANEL,
+                              highlightthickness=0)
+        self.ring.pack(pady=(18, 10))
+        self.ring.create_oval(14, 14, 166, 166, outline=PANEL2, width=10)
+        self.arc = self.ring.create_arc(14, 14, 166, 166, start=90, extent=0,
+                                        style="arc", outline=MUTED, width=10)
+        self.start_cap = self.ring.create_oval(85, 9, 95, 19, fill=MUTED,
+                                               outline="", state="hidden")
+        self.end_cap = self.ring.create_oval(85, 9, 95, 19, fill=MUTED,
+                                             outline="", state="hidden")
+        self.value = self.ring.create_text(90, 82, text="--", fill=MUTED,
+                                           font=("Segoe UI", 31, "bold"))
+        self.ring.create_text(90, 119, text="剩余电量", fill=MUTED,
+                              font=("Microsoft YaHei UI", 9))
         self.lab_status = ttk.Label(self.frame, text="", style="CardSub.TLabel")
-        self.lab_status.pack(anchor="w")
-
-        self.bar = ttk.Progressbar(self.frame, mode="determinate", maximum=100,
-                                   style="Card.Horizontal.TProgressbar")
-        self.bar.pack(fill="x", pady=(10, 8))
+        self.lab_status.pack(anchor="center")
 
         self.lab_detail = ttk.Label(self.frame, text="", style="CardSub.TLabel",
-                                    wraplength=250, justify="left")
-        self.lab_detail.pack(anchor="w")
+                                    wraplength=250, justify="center")
+        self.lab_detail.pack(anchor="center", pady=(8, 0))
         self.lab_extra = ttk.Label(self.frame, text="", style="CardSub.TLabel",
-                                   wraplength=250, justify="left")
-        self.lab_extra.pack(anchor="w", pady=(4, 0))
+                                   wraplength=250, justify="center")
+        self.lab_extra.pack(anchor="center", pady=(4, 0))
 
     def update(self, r: Reading) -> None:
         self.lab_sub.configure(text=r.subtitle)
+        color = level_color(r.level if r.ok else None)
+        level = r.level if r.ok else 0
+        self.ring.itemconfigure(self.arc, extent=-min(level * 3.6, 359.99), outline=color,
+                                 state="normal" if level else "hidden")
+        angle = math.radians(level * 3.6)
+        x, y = 90 + 76 * math.sin(angle), 90 - 76 * math.cos(angle)
+        self.ring.coords(self.end_cap, x - 5, y - 5, x + 5, y + 5)
+        for cap in (self.start_cap, self.end_cap):
+            self.ring.itemconfigure(cap, fill=color, state="normal" if level else "hidden")
         if r.ok:
-            self.lab_level.configure(text=f"{r.level}%",
-                                     foreground=level_color(r.level))
+            self.ring.itemconfigure(self.value, text=f"{r.level}%", fill=color)
             st = r.status if r.status not in ("未知", "状态未知") else ""
-            self.lab_status.configure(text=st)
-            self.bar["value"] = r.level or 0
-            self.lab_detail.configure(text=r.detail)
+            band = next(label for threshold, _, label in LEVEL_STYLE if r.level >= threshold)
+            self.lab_status.configure(text=f"{band}  ·  {st}" if st else band,
+                                       foreground=color)
+            self.lab_detail.configure(text="低电量，建议充电" if r.level < 30 else "")
             self.lab_extra.configure(text=r.extra)
         else:
-            self.lab_level.configure(text="--", foreground=MUTED)
-            self.lab_status.configure(text="")
-            self.bar["value"] = 0
+            self.ring.itemconfigure(self.value, text="--", fill=MUTED)
+            self.lab_status.configure(text="未连接 / 暂无数据", foreground=MUTED)
             self.lab_detail.configure(text=r.error)
             self.lab_extra.configure(text="")
 
@@ -205,8 +170,8 @@ def build_ui():
     root = tk.Tk()
     root.title(tc.UI_TITLE)
     root.configure(bg=BG)
-    root.geometry("680x470")
-    root.minsize(620, 440)
+    root.geometry("740x580")
+    root.minsize(700, 560)
 
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -223,10 +188,6 @@ def build_ui():
                     font=("Microsoft YaHei UI", 12, "bold"))
     style.configure("CardSub.TLabel", background=PANEL, foreground=MUTED,
                     font=("Microsoft YaHei UI", 9))
-    style.configure("CardBig.TLabel", background=PANEL, foreground="#5ddc8a",
-                    font=("Microsoft YaHei UI", 40, "bold"))
-    style.configure("Card.Horizontal.TProgressbar", background="#4f8cff",
-                    troughcolor=PANEL2, borderwidth=0, thickness=8)
     style.configure("TButton", background=PANEL2, foreground=FG, borderwidth=0,
                     focusthickness=0, padding=(14, 7), font=FONT)
     style.map("TButton", background=[("active", "#3a3f47"), ("disabled", "#2a2c30")],
@@ -263,6 +224,14 @@ def build_ui():
     ttk.Checkbutton(head, text="自动刷新", variable=v_auto,
                     command=on_auto).pack(side="right", padx=(0, 12))
 
+    legend = ttk.Frame(root, padding=(18, 0, 18, 12))
+    legend.pack(fill="x")
+    for text, color in (("● 60–100% 充足", "#5ddc8a"),
+                         ("● 30–59% 中等", "#f5c451"),
+                         ("● <30% 偏低", "#ff6b6b")):
+        ttk.Label(legend, text=text, foreground=color, style="Muted.TLabel").pack(
+            side="left", padx=(0, 20))
+
     # ---- 卡片 ----
     body = ttk.Frame(root, padding=(18, 4, 18, 4))
     body.pack(fill="both", expand=True)
@@ -270,10 +239,10 @@ def build_ui():
     body.columnconfigure(1, weight=1, uniform="card")
     body.rowconfigure(0, weight=1)
 
-    card_atk = DeviceCard(body, "ATK 鼠标")
-    card_atk.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-    card_dr = DeviceCard(body, "DARKRIM 耳机")
-    card_dr.frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+    card_mouse = DeviceCard(body, "ROG 龙鳞 ACE 鼠标")
+    card_mouse.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    card_headset = DeviceCard(body, "ROG PELTA 耳机")
+    card_headset.frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
     foot = ttk.Label(root, text="正在读取…", style="Muted.TLabel", padding=(18, 4))
     foot.pack(fill="x", side="bottom")
@@ -411,8 +380,8 @@ def build_ui():
 
     # ---- 刷新逻辑 ----
     def apply(readings: list[Reading]):
-        card_atk.update(readings[0])
-        card_dr.update(readings[1])
+        card_mouse.update(readings[0])
+        card_headset.update(readings[1])
         ok = sum(1 for r in readings if r.ok)
         foot.configure(text=f"更新于 {time.strftime('%H:%M:%S')}   "
                             f"成功读取 {ok}/2 个设备"
@@ -425,8 +394,8 @@ def build_ui():
             readings = read_all()
         except Exception:
             traceback.print_exc()
-            readings = [Reading("ATK 鼠标", "", error="读取异常"),
-                        Reading("DARKRIM 耳机", "", error="读取异常")]
+            readings = [Reading("ROG 龙鳞 ACE 鼠标", "", error="读取异常"),
+                        Reading("ROG PELTA 耳机", "", error="读取异常")]
         results.put(("readings", readings))
 
     def refresh():
@@ -434,7 +403,7 @@ def build_ui():
             return
         state["busy"] = True
         btn.configure(state="disabled")
-        foot.configure(text="正在读取…（耳机的协议要几秒钟）")
+        foot.configure(text="正在读取设备电量…")
         threading.Thread(target=worker, daemon=True).start()
 
     def _reschedule():
