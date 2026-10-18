@@ -282,7 +282,7 @@ def strategy_darkrim(iface: HidInterface) -> Optional[BatteryResult]:
 # --------------------------------------------------------------------------
 # ROG 龙鳞 ACE Aim Lab / PELTA：只发送查询命令，不修改设备设置。
 # 协议参考：seerge/g-helper 的 AsusMouse / HarpeAceAimLab，
-# OthrineTM/pelta-control 的 pelta/device.py；本机验证 OMNI 鼠标与 USB PELTA。
+# OthrineTM/pelta-control 的 pelta/device.py；本机验证 OMNI / USB 鼠标与 USB PELTA。
 # --------------------------------------------------------------------------
 def _rog_report_id(iface: HidInterface) -> Optional[int]:
     if iface.vid != 0x0B05:
@@ -290,10 +290,11 @@ def _rog_report_id(iface: HidInterface) -> Optional[int]:
     if (iface.pid == 0x1ACE and iface.usage_page == 0xFF01
             and "mi_02&col03" in iface.path.lower() and iface.output_len == 64):
         return 0x03
+    if (iface.pid in (0x1A94, 0x1A92) and iface.usage_page in (0xFF00, 0xFF01)
+            and iface.output_len == 65):
+        return 0x00
     if iface.usage_page != 0xFF00:
         return None
-    if iface.pid in (0x1A94, 0x1A92) and iface.output_len == 65:
-        return 0x00
     if iface.pid in (0x1B84, 0x1B82) and iface.output_len == 64:
         return 0xCC
     return None
@@ -373,7 +374,7 @@ def _read_rog_device(pids: tuple[int, ...]) -> BatteryResult:
 
 def read_rog_mouse() -> BatteryResult:
     # shortcut: OMNI 接收器按本机已确认的龙鳞 ACE 使用，更换鼠标时需重新确认型号。
-    return _read_rog_device((0x1ACE, 0x1A94, 0x1A92))
+    return _read_rog_device((0x1A92, 0x1ACE, 0x1A94))
 
 
 def read_rog_headset() -> BatteryResult:

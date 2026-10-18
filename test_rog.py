@@ -36,6 +36,26 @@ class RogTests(unittest.TestCase):
         result, _ = self.read(interface(0x1B82, 0xFF00), [power, reply(0xCC, 8)])
         self.assertEqual((result.ok, result.level, result.status), (True, 100, "full"))
 
+    def test_wired_mouse_real_capture(self):
+        capture = bytes.fromhex("00 12 07 00 00 1c 02 14 9c 10 01").ljust(65, b"\x00")
+        result, dev = self.read(interface(0x1A92, 0xFF01, 65), [capture])
+        self.assertEqual((result.ok, result.level, result.status), (True, 28, "charging"))
+        self.assertEqual(result.extra["connection"], "USB 有线")
+        dev.write_output.assert_called_once_with(bytes([0, 0x12, 7]).ljust(65, b"\x00"),
+                                                 use_hidd=False)
+
+    def test_mouse_prefers_usb_and_falls_back_to_wireless(self):
+        wired = interface(0x1A92, 0xFF01, 65)
+        wireless = interface(0x1ACE, 0xFF01, path="mi_02&col03")
+        good = bt.BatteryResult(ok=True, level=28, status="charging")
+        for results, expected in (([good], [0x1A92]),
+                                  ([bt.BatteryResult(ok=False), good], [0x1A92, 0x1ACE])):
+            with self.subTest(expected=expected), \
+                 patch.object(bt.hw, "enumerate_hid", return_value=[wireless, wired]), \
+                 patch.object(bt, "strategy_rog", side_effect=results) as read:
+                self.assertIs(bt.read_rog_mouse(), good)
+                self.assertEqual([call.args[0].pid for call in read.call_args_list], expected)
+
     def test_wireless_pelta_charging_at_zero(self):
         reports = [reply(0xCC, 0, b"\x01", b"\x00\x01"),
                    reply(0xCC, 7, b"\x05\x00"), reply(0xCC, 8, b"\x01")]
@@ -65,7 +85,8 @@ class RogTests(unittest.TestCase):
     def test_unrelated_interface_is_not_written(self):
         with patch.object(bt, "HidDevice") as factory:
             for iface in (interface(0x1A64, 0xFF00), interface(0x1ACE, 0xFF01),
-                          interface(0x1B84, 0xFF07), interface(0x1B82, 0xFF00, 65)):
+                          interface(0x1B84, 0xFF07), interface(0x1B82, 0xFF00, 65),
+                          interface(0x1A92, 0xFFC1, 65), interface(0x1A92, 0xFF01, 64)):
                 self.assertIsNone(bt.strategy_rog(iface))
             factory.assert_not_called()
 
