@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """win_icon.py —— 用纯 Python 画托盘图标（不依赖 Pillow / 任何第三方库）
 
-做法：圆环长度表示剩余电量，充电时中央显示闪电，
+做法：透明背景上以圆环长度表示剩余电量，充电时中央显示闪电，
 再手写 ICO 文件格式，最后交给 LoadImageW 变成 HICON。
 支持 16/24/32 三种尺寸，Windows 会按 DPI 自动挑合适的那张。
 """
@@ -21,9 +21,8 @@ BOLT = ("0000110", "0001100", "0011100", "0011000", "0111110",
 
 
 def render_rgba(text: str, size: int, color: tuple[int, int, int],
-                plate: bool = False, plate_color=(28, 30, 34, 235),
                 charging: bool = False) -> bytes:
-    """按电量文本绘制无数字圆环，充电时加闪电；未知状态显示短横线。"""
+    """在透明背景绘制无数字圆环，充电时加闪电；未知状态显示短横线。"""
     level = int(text) if text.isdecimal() else None
     if level is not None and not 0 <= level <= 100:
         raise ValueError("电量必须在 0–100 之间")
@@ -34,7 +33,6 @@ def render_rgba(text: str, size: int, color: tuple[int, int, int],
     center, radius, half_width = 8, 6.65, 0.95
     sweep = 0 if level is None else math.tau * level / 100
     end_x, end_y = radius * math.sin(sweep), -radius * math.cos(sweep)
-    background = plate_color[:3] if plate else (18, 22, 28)
     track = (77, 85, 97)
     glyph = (("11011",) if level is None else BOLT if charging else ())
     origin = (16 - len(glyph[0])) / 2 if glyph else 0
@@ -54,7 +52,7 @@ def render_rgba(text: str, size: int, color: tuple[int, int, int],
                     distance = math.hypot(dx, dy)
                     if distance > 7.8:
                         continue
-                    rgb = background
+                    rgb = None
                     if abs(distance - radius) <= half_width:
                         angle = math.atan2(dx, -dy) % math.tau
                         active = level is not None and level > 0 and (
@@ -63,6 +61,8 @@ def render_rgba(text: str, size: int, color: tuple[int, int, int],
                         rgb = color if active else track
                     if (math.floor(px - origin), math.floor(py - top)) in ink:
                         rgb = (239, 243, 249) if level is not None else (155, 164, 177)
+                    if rgb is None:
+                        continue
                     for channel in range(3):
                         total[channel] += rgb[channel]
                     total[3] += 255
@@ -132,16 +132,16 @@ def _ensure_tmp() -> str:
     return _tmp_dir
 
 
-def make_hicon(text: str, color: tuple[int, int, int], plate: bool = False,
+def make_hicon(text: str, color: tuple[int, int, int],
                charging: bool = False) -> int:
     """按电量、颜色和充电状态生成（带缓存的）HICON；失败返回 0。"""
-    key = (text, color, plate, charging)
+    key = (text, color, charging)
     if key in _icon_cache:
         return _icon_cache[key]
-    images = [(s, render_rgba(text, s, color, plate, charging=charging)) for s in SIZES]
+    images = [(s, render_rgba(text, s, color, charging=charging)) for s in SIZES]
     ico = build_ico(images)
     path = os.path.join(_ensure_tmp(), f"ring_{text}_{color[0]:02x}{color[1]:02x}"
-                                       f"{color[2]:02x}_{int(plate)}_{int(charging)}.ico")
+                                       f"{color[2]:02x}_{int(charging)}.ico")
     try:
         with open(path, "wb") as f:
             f.write(ico)
@@ -178,14 +178,14 @@ if __name__ == "__main__":
     # 生成几个样例，方便肉眼检查
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_icon_preview")
     os.makedirs(out, exist_ok=True)
-    for text, color, plate, name in (
-        ("82", (93, 220, 138), False, "mouse82"),
-        ("70", (93, 220, 138), True, "headset70"),
-        ("9", (255, 107, 107), False, "mouse9"),
-        ("100", (93, 220, 138), True, "headset100"),
-        ("25", (245, 196, 81), False, "mouse25"),
+    for text, color, name in (
+        ("82", (93, 220, 138), "mouse82"),
+        ("70", (93, 220, 138), "headset70"),
+        ("9", (255, 107, 107), "mouse9"),
+        ("100", (93, 220, 138), "headset100"),
+        ("25", (245, 196, 81), "mouse25"),
     ):
-        imgs = [(s, render_rgba(text, s, color, plate)) for s in SIZES]
+        imgs = [(s, render_rgba(text, s, color)) for s in SIZES]
         p = os.path.join(out, name + ".ico")
         with open(p, "wb") as f:
             f.write(build_ico(imgs))

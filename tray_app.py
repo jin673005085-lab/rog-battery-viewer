@@ -3,7 +3,7 @@
 
 界面约定
 --------
-* 通知区域两个无数字圆环图标：环长表示电量，充电时中央显示闪电。
+* 通知区域两个透明背景的无数字圆环图标：环长表示电量，充电时中央显示闪电。
   图标颜色随电量变化：绿 ≥60 / 黄 30-59 / 红 <30。
 * **右键图标 → 直接打开简洁界面**（界面里改设置：刷新间隔 / 开机自启 / 退出托盘）。
 * 左键图标 → 立刻刷新一次。
@@ -154,9 +154,9 @@ KERNEL32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
                                   wintypes.LPCWSTR]
 
 TRAY_ICONS = [
-    # (uID, key, 提示名, 是否带底板)
-    (1, "mouse", "ROG 龙鳞 ACE 鼠标", False),
-    (2, "headset", "ROG PELTA 耳机", True),
+    # (uID, key, 提示名)
+    (1, "mouse", "ROG 龙鳞 ACE 鼠标"),
+    (2, "headset", "ROG PELTA 耳机"),
 ]
 
 
@@ -171,7 +171,7 @@ class TrayApp:
         self.wndproc_ref = None
         self.busy = False
         self.readings = {k: bt.BatteryResult(ok=False, detail="正在读取…")
-                         for _, k, _, _ in TRAY_ICONS}
+                         for _, k, _ in TRAY_ICONS}
         self.icons_added = False
         self.taskbar_created_msg = USER32.RegisterWindowMessageW("TaskbarCreated")
         self.msg_quit = USER32.RegisterWindowMessageW(tc.MSG_QUIT)
@@ -208,21 +208,20 @@ class TrayApp:
         nid.uCallbackMessage = MSG_TRAY_CALLBACK
         return nid
 
-    def _apply_icon(self, action: int, uID: int, key: str, title: str,
-                    plate: bool) -> bool:
+    def _apply_icon(self, action: int, uID: int, key: str, title: str) -> bool:
         result = self.readings[key]
         level = result.level if result.ok else None
         text = str(level) if level is not None else "--"
         nid = self._nid(uID)
-        nid.hIcon = win_icon.make_hicon(text, self._color(level), plate,
+        nid.hIcon = win_icon.make_hicon(text, self._color(level),
                                        charging=level is not None and result.status == "charging")
         nid.szTip = (f"{title}：{level}% · {result.status_text}（{time.strftime('%H:%M:%S')} 更新）"
                      if level is not None else f"{title}：{result.detail or '未知'}")
         return bool(SHELL32.Shell_NotifyIconW(action, ctypes.byref(nid)))
 
     def add_icons(self) -> None:
-        for uID, key, title, plate in TRAY_ICONS:
-            ok = self._apply_icon(NIM_ADD, uID, key, title, plate)
+        for uID, key, title in TRAY_ICONS:
+            ok = self._apply_icon(NIM_ADD, uID, key, title)
             self.log(f"NIM_ADD {title} -> {'ok' if ok else '失败'}")
         self.icons_added = True
 
@@ -230,11 +229,11 @@ class TrayApp:
         if not self.icons_added:
             self.add_icons()
             return
-        for uID, key, title, plate in TRAY_ICONS:
-            self._apply_icon(NIM_MODIFY, uID, key, title, plate)
+        for uID, key, title in TRAY_ICONS:
+            self._apply_icon(NIM_MODIFY, uID, key, title)
 
     def remove_icons(self) -> None:
-        for uID, _, _, _ in TRAY_ICONS:
+        for uID, _, _ in TRAY_ICONS:
             nid = self._nid(uID)
             nid.uFlags = 0
             SHELL32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))

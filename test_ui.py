@@ -1,5 +1,6 @@
 """圆环回归检查：python -m unittest -v test_ui。"""
 import math
+import struct
 import tempfile
 import tkinter as tk
 import unittest
@@ -97,11 +98,32 @@ class RingTests(unittest.TestCase):
                  patch.object(win_icon, "make_hicon", return_value=1) as icon, \
                  patch.object(tray_app.SHELL32, "Shell_NotifyIconW", side_effect=notify):
                 app._worker(0)
-                for uid, key, title, plate in tray_app.TRAY_ICONS:
-                    self.assertTrue(app._apply_icon(tray_app.NIM_MODIFY, uid, key, title, plate))
+                for uid, key, title in tray_app.TRAY_ICONS:
+                    self.assertTrue(app._apply_icon(tray_app.NIM_MODIFY, uid, key, title))
                     self.assertEqual(icon.call_args.kwargs["charging"], ok and status == "charging")
                     self.assertIn(f"{level}% · {result.status_text}" if ok else "未连接", tips[-1])
                     self.assertEqual(icon.call_args.args[0], str(level) if ok else "--")
+
+    def test_background_is_transparent_in_rgba_and_ico(self):
+        for size in win_icon.SIZES:
+            for text, charging in (("0", False), ("32", False), ("100", False),
+                                   ("32", True), ("--", False)):
+                with self.subTest(size=size, text=text, charging=charging):
+                    raw = win_icon.render_rgba(text, size, (93, 220, 138), charging=charging)
+                    alphas = raw[3::4]
+                    center = (size // 2 * size + size // 2) * 4
+                    if text.isdecimal() and not charging:
+                        self.assertEqual(raw[center:center + 4], bytes(4))
+                    self.assertIn(0, alphas)
+                    self.assertIn(255, alphas)
+                    self.assertTrue(any(0 < alpha < 255 for alpha in alphas))
+                    ico = win_icon.build_ico([(size, raw)])
+                    offset = struct.unpack_from("<I", ico, 18)[0] + 40
+                    stored = ico[offset:offset + size * size * 4]
+                    rows = [alphas[y * size:(y + 1) * size] for y in range(size)]
+                    self.assertEqual(stored[3::4], b"".join(reversed(rows)))
+                    self.assertNotIn(bytes((18, 22, 28, 255)), raw)
+                    self.assertNotIn(bytes((28, 30, 34, 255)), raw)
 
     def test_panel_clears_old_level_when_disconnected(self):
         root = tk.Tk()
