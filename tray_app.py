@@ -3,11 +3,11 @@
 
 界面约定
 --------
-* 通知区域两个圆环图标：环长表示电量，中央数字表示百分比；悬停显示设备名。
+* 通知区域两个无数字圆环图标：环长表示电量，充电时中央显示闪电。
   图标颜色随电量变化：绿 ≥60 / 黄 30-59 / 红 <30。
 * **右键图标 → 直接打开简洁界面**（界面里改设置：刷新间隔 / 开机自启 / 退出托盘）。
 * 左键图标 → 立刻刷新一次。
-* 悬停显示 tooltip：设备名 + 电量 + 更新时间。
+* 悬停显示 tooltip：设备名 + 电量 + 充电状态 + 更新时间。
 
 其它
 ----
@@ -161,19 +161,6 @@ TRAY_ICONS = [
 
 
 # --------------------------------------------------------------------------
-# 设备读取（轻量版）
-# --------------------------------------------------------------------------
-def read_mouse() -> tuple[Optional[int], str]:
-    result = bt.read_rog_mouse()
-    return (result.level, "") if result.ok else (None, result.detail)
-
-
-def read_headset() -> tuple[Optional[int], str]:
-    result = bt.read_rog_headset()
-    return (result.level, "") if result.ok else (None, result.detail)
-
-
-# --------------------------------------------------------------------------
 # 托盘程序
 # --------------------------------------------------------------------------
 class TrayApp:
@@ -183,7 +170,8 @@ class TrayApp:
         self.hwnd: Optional[int] = None
         self.wndproc_ref = None
         self.busy = False
-        self.levels = {k: (None, "正在读取…") for _, k, _, _ in TRAY_ICONS}
+        self.readings = {k: bt.BatteryResult(ok=False, detail="正在读取…")
+                         for _, k, _, _ in TRAY_ICONS}
         self.icons_added = False
         self.taskbar_created_msg = USER32.RegisterWindowMessageW("TaskbarCreated")
         self.msg_quit = USER32.RegisterWindowMessageW(tc.MSG_QUIT)
@@ -222,12 +210,14 @@ class TrayApp:
 
     def _apply_icon(self, action: int, uID: int, key: str, title: str,
                     plate: bool) -> bool:
-        level, err = self.levels[key]
+        result = self.readings[key]
+        level = result.level if result.ok else None
         text = str(level) if level is not None else "--"
         nid = self._nid(uID)
-        nid.hIcon = win_icon.make_hicon(text, self._color(level), plate)
-        nid.szTip = (f"{title}：{level}%（{time.strftime('%H:%M:%S')} 更新）"
-                     if level is not None else f"{title}：{err or '未知'}")
+        nid.hIcon = win_icon.make_hicon(text, self._color(level), plate,
+                                       charging=level is not None and result.status == "charging")
+        nid.szTip = (f"{title}：{level}% · {result.status_text}（{time.strftime('%H:%M:%S')} 更新）"
+                     if level is not None else f"{title}：{result.detail or '未知'}")
         return bool(SHELL32.Shell_NotifyIconW(action, ctypes.byref(nid)))
 
     def add_icons(self) -> None:
@@ -285,16 +275,17 @@ class TrayApp:
 
     def _worker(self, hwnd: int) -> None:
         try:
-            self.levels["mouse"] = read_mouse()
-            self.levels["headset"] = read_headset()
+            self.readings["mouse"] = bt.read_rog_mouse()
+            self.readings["headset"] = bt.read_rog_headset()
         except Exception:
             self.log("读取异常:\n" + traceback.format_exc())
         USER32.PostMessageW(hwnd, MSG_REFRESH_DONE, 0, 0)
 
     def on_refresh_done(self) -> None:
         self.busy = False
-        m, h = self.levels["mouse"], self.levels["headset"]
-        self.log(f"刷新完成：鼠标={m[0]}（{m[1] or 'ok'}） 耳机={h[0]}（{h[1] or 'ok'}）")
+        m, h = self.readings["mouse"], self.readings["headset"]
+        self.log(f"刷新完成：鼠标={m.level}（{m.detail or m.status_text}） "
+                 f"耳机={h.level}（{h.detail or h.status_text}）")
         self.update_icons()
 
     # ---- 打开简洁界面 ---------------------------------------------------
@@ -418,7 +409,7 @@ def main() -> int:
         if tc.is_tray_running():
             # 真有一个正常实例在跑：让它重读配置
             tc.post_to_tray(tc.MSG_RELOAD)
-            print("已经在运行了（托盘里两个数字图标就是它；右键图标打开界面）")
+            print("已经在运行了（托盘里两个圆环图标就是它；右键图标打开界面）")
             return 0
         # 有人占着锁但已经没有窗口 —— 上一版留下的僵尸进程，清掉后继续启动
         tc.cleanup_zombie()

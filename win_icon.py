@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """win_icon.py —— 用纯 Python 画托盘图标（不依赖 Pillow / 任何第三方库）
 
-做法：圆环长度表示剩余电量，中央用点阵数字显示百分比，
+做法：圆环长度表示剩余电量，充电时中央显示闪电，
 再手写 ICO 文件格式，最后交给 LoadImageW 变成 HICON。
 支持 16/24/32 三种尺寸，Windows 会按 DPI 自动挑合适的那张。
 """
@@ -16,25 +16,14 @@ import tempfile
 from ctypes import wintypes
 from typing import Optional
 
-# ---- 3x5 点阵数字（每行 3 位，"1" 点亮）----
-DIGITS = {
-    "0": ("111", "101", "101", "101", "111"),
-    "1": ("010", "110", "010", "010", "111"),
-    "2": ("111", "001", "111", "100", "111"),
-    "3": ("111", "001", "111", "001", "111"),
-    "4": ("101", "101", "111", "001", "001"),
-    "5": ("111", "100", "111", "001", "111"),
-    "6": ("111", "100", "111", "101", "111"),
-    "7": ("111", "001", "001", "010", "010"),
-    "8": ("111", "101", "111", "101", "111"),
-    "9": ("111", "101", "111", "001", "111"),
-    "%": ("101", "001", "010", "100", "101"),
-}
+BOLT = ("0000110", "0001100", "0011100", "0011000", "0111110",
+        "0001100", "0011000", "0010000", "0100000")
 
 
 def render_rgba(text: str, size: int, color: tuple[int, int, int],
-                plate: bool = False, plate_color=(28, 30, 34, 235)) -> bytes:
-    """把文字渲染成 size×size 的 RGBA 像素（返回 size*size*4 字节，行优先）。"""
+                plate: bool = False, plate_color=(28, 30, 34, 235),
+                charging: bool = False) -> bytes:
+    """按电量文本绘制无数字圆环，充电时加闪电；未知状态显示短横线。"""
     level = int(text) if text.isdecimal() else None
     if level is not None and not 0 <= level <= 100:
         raise ValueError("电量必须在 0–100 之间")
@@ -47,19 +36,11 @@ def render_rgba(text: str, size: int, color: tuple[int, int, int],
     end_x, end_y = radius * math.sin(sweep), -radius * math.cos(sweep)
     background = plate_color[:3] if plate else (18, 22, 28)
     track = (77, 85, 97)
-    glyphs = [("1",) * 5 if ch == "1" else
-              ("000", "000", "111", "000", "000") if ch == "-" else DIGITS[ch]
-              for ch in text]
-    width = sum(len(glyph[0]) for glyph in glyphs) + len(glyphs) - 1
-    origin, top = (16 - width) // 2, 5
-    left = 0
-    ink = set()
-    for glyph in glyphs:
-        for y, row in enumerate(glyph):
-            for x, bit in enumerate(row):
-                if bit == "1":
-                    ink.add((left + x, y))
-        left += len(glyph[0]) + 1
+    glyph = (("11011",) if level is None else BOLT if charging else ())
+    origin = (16 - len(glyph[0])) / 2 if glyph else 0
+    top = (16 - len(glyph)) / 2
+    ink = {(x, y) for y, row in enumerate(glyph)
+           for x, bit in enumerate(row) if bit == "1"}
 
     pixels = bytearray(size * size * 4)
     for y in range(size):
@@ -151,15 +132,16 @@ def _ensure_tmp() -> str:
     return _tmp_dir
 
 
-def make_hicon(text: str, color: tuple[int, int, int], plate: bool = False) -> int:
-    """按文字+颜色生成（带缓存的）HICON；失败返回 0。"""
-    key = (text, color, plate)
+def make_hicon(text: str, color: tuple[int, int, int], plate: bool = False,
+               charging: bool = False) -> int:
+    """按电量、颜色和充电状态生成（带缓存的）HICON；失败返回 0。"""
+    key = (text, color, plate, charging)
     if key in _icon_cache:
         return _icon_cache[key]
-    images = [(s, render_rgba(text, s, color, plate)) for s in SIZES]
+    images = [(s, render_rgba(text, s, color, plate, charging=charging)) for s in SIZES]
     ico = build_ico(images)
     path = os.path.join(_ensure_tmp(), f"ring_{text}_{color[0]:02x}{color[1]:02x}"
-                                       f"{color[2]:02x}_{int(plate)}.ico")
+                                       f"{color[2]:02x}_{int(plate)}_{int(charging)}.ico")
     try:
         with open(path, "wb") as f:
             f.write(ico)

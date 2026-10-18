@@ -19,9 +19,10 @@ ROG 协议资料另参考 [G-Helper](https://github.com/seerge/g-helper) 和
 运行 `python my_devices.py` 打开面板，`python my_devices.py --once` 只读取一次；
 `pythonw tray_app.py` 启动托盘。环境仍为 Windows 10/11、Python 3.10+（含 tkinter），无第三方依赖。
 
-面板与托盘使用电量圆环：从顶部顺时针填充，中央显示百分比。
+面板与托盘使用电量圆环：从顶部顺时针填充，面板中央显示百分比，托盘不显示数字。
 60–100% 绿色、30–59% 黄色、低于 30% 红色；未连接显示灰环与 `--`。
-托盘悬停可查看设备名称、准确电量和更新时间。
+托盘充电时中央显示白色闪电，停止充电后消失；已充满以绿色满环显示。
+托盘悬停可查看设备名称、准确电量、充电状态和更新时间。
 
 - 鼠标：当前 OMNI 接收器 `0B05:1ACE`，接口 `MI_02&COL03`，Report ID `0x03`。
   查询 `03 12 07`，电量在回复 `[5]`，充电标志在 `[10]`。
@@ -36,7 +37,7 @@ ROG 协议资料另参考 [G-Helper](https://github.com/seerge/g-helper) 和
 
 协议资料：[G-Helper](https://github.com/seerge/g-helper/tree/main/app/Peripherals/Mouse)、
 [pelta-control](https://github.com/OthrineTM/pelta-control/blob/main/pelta/device.py)。
-运行测试：`python -m unittest -v test_rog test_ui`（14 项，包含协议与圆环显示）。
+运行测试：`python -m unittest -v test_rog test_ui`（包含协议、圆环显示与充电状态切换）。
 调试版 `app.py` 也接入了 ROG 读取；上游 ATK / DARKRIM 协议保留在底层。
 
 ## 界面预览
